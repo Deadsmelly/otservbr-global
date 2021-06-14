@@ -4288,18 +4288,21 @@ int LuaScriptInterface::luaDoSetCreatureLight(lua_State* L)
 int LuaScriptInterface::luaAddEvent(lua_State* L)
 {
 	//addEvent(callback, delay, ...)
-	lua_State* globalState = g_luaEnvironment.getLuaState();
-	if (!globalState) {
-		reportErrorFunc("No valid script interface!");
+	int parameters = lua_gettop(L);
+	if (parameters < 2) {
+		reportErrorFunc(L, fmt::format("Not enough parameters: {:d}.", parameters));
 		pushBoolean(L, false);
 		return 1;
-	} else if (globalState != L) {
-		lua_xmove(L, globalState, lua_gettop(L));
 	}
 
-	int parameters = lua_gettop(globalState);
-	if (!isFunction(globalState, -parameters)) { //-parameters means the first parameter from left to right
-		reportErrorFunc("callback parameter should be a function.");
+	if (!isFunction(L, 1)) {
+		reportErrorFunc(L, "callback parameter should be a function.");
+		pushBoolean(L, false);
+		return 1;
+	}
+
+	if (!isNumber(L, 2)) {
+		reportErrorFunc(L, "delay parameter should be a number.");
 		pushBoolean(L, false);
 		return 1;
 	}
@@ -4307,7 +4310,7 @@ int LuaScriptInterface::luaAddEvent(lua_State* L)
 	if (g_config.getBoolean(ConfigManager::WARN_UNSAFE_SCRIPTS) || g_config.getBoolean(ConfigManager::CONVERT_UNSAFE_SCRIPTS)) {
 		std::vector<std::pair<int32_t, LuaDataType>> indexes;
 		for (int i = 3; i <= parameters; ++i) {
-			if (lua_getmetatable(globalState, i) == 0) {
+			if (lua_getmetatable(L, i) == 0) {
 				continue;
 			}
 			lua_rawgeti(L, -1, 't');
@@ -4316,7 +4319,7 @@ int LuaScriptInterface::luaAddEvent(lua_State* L)
 			if (type != LuaData_Unknown && type != LuaData_Tile) {
 				indexes.push_back({i, type});
 			}
-			lua_pop(globalState, 2);
+			lua_pop(L, 2);
 		}
 
 		if (!indexes.empty()) {
@@ -4346,7 +4349,7 @@ int LuaScriptInterface::luaAddEvent(lua_State* L)
 					warningString += " is unsafe";
 				}
 
-				reportErrorFunc(warningString);
+				reportErrorFunc(L, warningString);
 			}
 
 			if (g_config.getBoolean(ConfigManager::CONVERT_UNSAFE_SCRIPTS)) {
@@ -4355,38 +4358,39 @@ int LuaScriptInterface::luaAddEvent(lua_State* L)
 						case LuaData_Item:
 						case LuaData_Container:
 						case LuaData_Teleport: {
-							lua_getglobal(globalState, "Item");
-							lua_getfield(globalState, -1, "getUniqueId");
+							lua_getglobal(L, "Item");
+							lua_getfield(L, -1, "getUniqueId");
 							break;
 						}
 						case LuaData_Player:
 						case LuaData_Monster:
 						case LuaData_Npc: {
-							lua_getglobal(globalState, "Creature");
-							lua_getfield(globalState, -1, "getId");
+							lua_getglobal(L, "Creature");
+							lua_getfield(L, -1, "getId");
 							break;
 						}
 						default:
 							break;
 					}
-					lua_replace(globalState, -2);
-					lua_pushvalue(globalState, entry.first);
-					lua_call(globalState, 1, 1);
-					lua_replace(globalState, entry.first);
+					lua_replace(L, -2);
+					lua_pushvalue(L, entry.first);
+					lua_call(L, 1, 1);
+					lua_replace(L, entry.first);
 				}
 			}
 		}
 	}
 
 	LuaTimerEventDesc eventDesc;
-	for (int i = 0; i < parameters - 2; ++i) { //-2 because addEvent needs at least two parameters
-		eventDesc.parameters.push_back(luaL_ref(globalState, LUA_REGISTRYINDEX));
+	eventDesc.parameters.reserve(parameters - 2); // safe to use -2 since we garanteed that there is at least two parameters
+	for (int i = 0; i < parameters - 2; ++i) {
+		eventDesc.parameters.push_back(luaL_ref(L, LUA_REGISTRYINDEX));
 	}
 
-	uint32_t delay = std::max<uint32_t>(100, getNumber<uint32_t>(globalState, 2));
-	lua_pop(globalState, 1);
+	uint32_t delay = std::max<uint32_t>(100, getNumber<uint32_t>(L, 2));
+	lua_pop(L, 1);
 
-	eventDesc.function = luaL_ref(globalState, LUA_REGISTRYINDEX);
+	eventDesc.function = luaL_ref(L, LUA_REGISTRYINDEX);
 	eventDesc.scriptId = getScriptEnv()->getScriptId();
 
 	auto& lastTimerEventId = g_luaEnvironment.lastEventTimerId;
@@ -4402,13 +4406,6 @@ int LuaScriptInterface::luaAddEvent(lua_State* L)
 int LuaScriptInterface::luaStopEvent(lua_State* L)
 {
 	//stopEvent(eventid)
-	lua_State* globalState = g_luaEnvironment.getLuaState();
-	if (!globalState) {
-		reportErrorFunc("No valid script interface!");
-		pushBoolean(L, false);
-		return 1;
-	}
-
 	uint32_t eventId = getNumber<uint32_t>(L, 1);
 
 	auto& timerEvents = g_luaEnvironment.timerEvents;
@@ -4422,10 +4419,10 @@ int LuaScriptInterface::luaStopEvent(lua_State* L)
 	timerEvents.erase(it);
 
 	g_scheduler.stopEvent(timerEventDesc.eventId);
-	luaL_unref(globalState, LUA_REGISTRYINDEX, timerEventDesc.function);
+	luaL_unref(L, LUA_REGISTRYINDEX, timerEventDesc.function);
 
 	for (auto parameter : timerEventDesc.parameters) {
-		luaL_unref(globalState, LUA_REGISTRYINDEX, parameter);
+		luaL_unref(L, LUA_REGISTRYINDEX, parameter);
 	}
 
 	pushBoolean(L, true);
